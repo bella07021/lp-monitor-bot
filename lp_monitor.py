@@ -6,6 +6,7 @@ from datetime import datetime
 import hashlib
 import subprocess
 import time
+import sys
 
 class LPMonitor:
     def __init__(self):
@@ -34,7 +35,8 @@ class LPMonitor:
         
         missing_vars = [var for var, value in required_vars.items() if not value]
         if missing_vars:
-            raise Exception(f"缺少必要的环境变量: {', '.join(missing_vars)}")
+            print(f"错误: 缺少必要的环境变量: {', '.join(missing_vars)}")
+            sys.exit(1)
     
     def execute_dune_query(self):
         """执行Dune查询获取LP头寸数据"""
@@ -50,6 +52,8 @@ class LPMonitor:
             response.raise_for_status()
         except requests.exceptions.RequestException as e:
             print(f"Dune API请求失败: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"响应内容: {e.response.text}")
             return None
             
         execution_id = response.json()['execution_id']
@@ -61,13 +65,16 @@ class LPMonitor:
             try:
                 status_response = requests.get(status_url, headers=headers, timeout=30)
                 status_response.raise_for_status()
-                status = status_response.json()['state']
+                status_data = status_response.json()
+                status = status_data['state']
                 print(f"查询状态: {status}")
                 
                 if status == 'QUERY_STATE_COMPLETED':
                     break
                 elif status in ['QUERY_STATE_FAILED', 'QUERY_STATE_CANCELLED']:
                     print(f"查询失败: {status}")
+                    if 'message' in status_data:
+                        print(f"错误信息: {status_data['message']}")
                     return None
                     
             except requests.exceptions.RequestException as e:
@@ -84,7 +91,9 @@ class LPMonitor:
         try:
             results_response = requests.get(results_url, headers=headers, timeout=30)
             results_response.raise_for_status()
-            return results_response.json()['result']['rows']
+            result_data = results_response.json()
+            print(f"获取到结果，行数: {len(result_data['result']['rows'])}")
+            return result_data['result']['rows']
         except requests.exceptions.RequestException as e:
             print(f"获取结果失败: {e}")
             return None
@@ -93,8 +102,14 @@ class LPMonitor:
         """加载之前的数据"""
         try:
             with open(self.data_file, 'r') as f:
-                return json.load(f)
+                data = json.load(f)
+                print(f"加载历史数据，头寸数量: {len(data.get('positions', []))}")
+                return data
         except FileNotFoundError:
+            print("未找到历史数据文件，首次运行")
+            return {'positions': [], 'timestamp': None}
+        except json.JSONDecodeError as e:
+            print(f"历史数据文件格式错误: {e}")
             return {'positions': [], 'timestamp': None}
     
     def save_current_data(self, data):
@@ -102,6 +117,7 @@ class LPMonitor:
         os.makedirs(self.data_dir, exist_ok=True)
         with open(self.data_file, 'w') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+        print(f"数据已保存，头寸数量: {len(data.get('positions', []))}")
         
         # 同时保存历史记录
         history_data = {}
@@ -141,16 +157,22 @@ class LPMonitor:
         old_positions_dict = {str(p['tokenId']): p for p in old_positions}
         new_positions_dict = {str(p['tokenId']): p for p in new_positions}
         
+        print(f"比较数据: 旧{len(old_positions)}个, 新{len(new_positions)}个头寸")
+        
         # 找出新增的头寸
-        for token_id in set(new_positions_dict.keys()) - set(old_positions_dict.keys()):
+        added_ids = set(new_positions_dict.keys()) - set(old_positions_dict.keys())
+        for token_id in added_ids:
             changes['added'].append(new_positions_dict[token_id])
         
         # 找出移除的头寸
-        for token_id in set(old_positions_dict.keys()) - set(new_positions_dict.keys()):
+        removed_ids = set(old_positions_dict.keys()) - set(new_positions_dict.keys())
+        for token_id in removed_ids:
             changes['removed'].append(old_positions_dict[token_id])
         
         # 找出修改的头寸
-        for token_id in set(old_positions_dict.keys()) & set(new_positions_dict.keys()):
+        common_ids = set(old_positions_dict.keys()) & set(new_positions_dict.keys())
+        modified_count = 0
+        for token_id in common_ids:
             old_hash = self.calculate_position_hash(old_positions_dict[token_id])
             new_hash = self.calculate_position_hash(new_positions_dict[token_id])
             if old_hash != new_hash:
@@ -158,7 +180,9 @@ class LPMonitor:
                     'old': old_positions_dict[token_id],
                     'new': new_positions_dict[token_id]
                 })
+                modified_count += 1
         
+        print(f"变动统计: 新增{len(added_ids)}, 移除{len(removed_ids)}, 修改{modified_count}")
         return changes
     
     def format_position_display(self, position):
@@ -322,7 +346,7 @@ class LPMonitor:
         new_positions = self.execute_dune_query()
         if new_positions is None:
             print("获取Dune数据失败，退出")
-            return
+            return None
         
         print(f"获取到 {len(new_positions)} 个头寸数据")
         
@@ -349,6 +373,8 @@ class LPMonitor:
                     print("检测到变动，已发送TG通知")
                 else:
                     print("检测到变动，但TG发送失败")
+            else:
+                print("消息格式化为空")
         else:
             print("未检测到变动")
         
@@ -364,6 +390,10 @@ def main():
     try:
         monitor = LPMonitor()
         changes = monitor.monitor()
+        
+        if changes is None:
+            print("监控失败，Dune查询无结果")
+            return
         
         # 输出摘要
         print(f"\n监控完成:")
