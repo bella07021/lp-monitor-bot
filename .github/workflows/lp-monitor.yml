@@ -27,4 +27,5 @@ jobs:
           DUNE_API_KEY: ${{ secrets.DUNE_API_KEY }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          DUNE_QUERY_ID: ${{ secrets.DUNE_QUERY_ID }}
         run: python lp_monitor.py
