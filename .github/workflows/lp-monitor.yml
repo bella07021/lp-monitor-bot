@@ -1,0 +1,30 @@
+# .github/workflows/lp-monitor.yml
+name: LP Position Monitor
+on:
+  schedule:
+    - cron: '0 */2 * * *'  # 每2小时运行一次
+  workflow_dispatch:  # 手动触发
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+          
+      - name: Install dependencies
+        run: |
+          pip install requests pandas python-telegram-bot
+          
+      - name: Run LP Monitor
+        env:
+          DUNE_API_KEY: ${{ secrets.DUNE_API_KEY }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: python lp_monitor.py
